@@ -1,0 +1,138 @@
+name: Build mobile test apps
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Build Android APK, unsigned iOS device IPA, or both
+        type: choice
+        required: true
+        default: both
+        options: [android, ios, both]
+  push:
+    branches: [main]
+    paths:
+      - Pont-App.zip
+      - .github/workflows/mobile-builds.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+    working-directory: app
+
+jobs:
+  android:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.platform == 'android' || inputs.platform == 'both'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Extract app source
+        working-directory: .
+        run: |
+          unzip -q Pont-App.zip -d app
+          test -f app/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+      - name: Test course and build app
+        run: |
+          npm test
+          npm run mobile:setup -- android
+      - name: Compile debug APK
+        working-directory: app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+      - name: Save APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pont-Android-debug-APK
+          path: app/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  ios-device:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.platform == 'ios' || inputs.platform == 'both'))
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Extract app source
+        working-directory: .
+        run: |
+          unzip -q Pont-App.zip -d app
+          test -f app/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Confirm Xcode
+        run: xcodebuild -version
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+      - name: Test course and prepare native app
+        run: |
+          npm test
+          npm run mobile:setup -- ios
+      - name: Compile unsigned iPhone device app
+        run: >-
+          xcodebuild
+          -project ios/App/App.xcodeproj
+          -scheme App
+          -configuration Release
+          -sdk iphoneos
+          -destination 'generic/platform=iOS'
+          -derivedDataPath build/ios
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          build
+      - name: Verify and package unsigned device IPA
+        run: |
+          app="build/ios/Build/Products/Release-iphoneos/App.app"
+          test -d "$app"
+          platform=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$app/Info.plist")
+          test "$platform" = "iPhoneOS"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+          xcrun lipo -verify_arch arm64 "$app/$executable"
+          mkdir -p build/ios-unsigned/Payload
+          ditto "$app" build/ios-unsigned/Payload/Pont.app
+          ditto -c -k --keepParent build/ios-unsigned/Payload Pont-iOS-unsigned.ipa
+          unzip -t Pont-iOS-unsigned.ipa
+          printf '%s\n' '## iOS device build' 'Pont-iOS-unsigned.ipa contains a real ARM64 iPhone app. It is unsigned and must be signed before installation.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Save unsigned device IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pont-iOS-unsigned-IPA
+          path: app/Pont-iOS-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
