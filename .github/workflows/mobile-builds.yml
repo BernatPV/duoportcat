@@ -26,7 +26,7 @@ defaults:
 jobs:
   android:
     if: >-
-      github.event_name == 'push' ||
+      (github.event_name == 'push' && !contains(github.event.head_commit.message, '[ios-only]')) ||
       (github.event_name == 'workflow_dispatch' && (inputs.platform == 'android' || inputs.platform == 'both'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -131,7 +131,7 @@ jobs:
           platform=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' "$app/Info.plist")
           test "$platform" = "iPhoneOS"
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
-          xcrun lipo -verify_arch arm64 "$app/$executable"
+          xcrun lipo "$app/$executable" -verify_arch arm64
           mkdir -p build/ios-unsigned/Payload
           ditto "$app" build/ios-unsigned/Payload/Pont.app
           ditto -c -k --keepParent build/ios-unsigned/Payload Pont-iOS-unsigned.ipa
